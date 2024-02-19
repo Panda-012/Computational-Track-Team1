@@ -6,6 +6,9 @@ library(DESeq2)
 library(edgeR)
 library(pscl)
 library(glmmTMB)
+library(data.table)
+library(reshape2) # For melt function
+library(dplyr) # For data manipulation
 library(MCMCglmm)  # For fitting hurdle models
 library(jsonlite)  # For loading metadata and clinical data
 
@@ -70,22 +73,52 @@ dge$samples$subtype <- ifelse(colnames(dge$counts) %in% LumA, "Luminal_A",
 
 ###############################################################
 
-# Handle excess zeros with the Zero-Inflated Negative Binomial Model
-normalized_counts <- cpm(dge, normalized.lib.size = TRUE)
-normalized_counts_df <- as.data.frame(normalized_counts)
+# Fit the data to the Zero-Inflated Negative Binomial (ZINB) Model requirements
+count_matrix_dt <- as.data.table(dge$counts)
+count_matrix_dt[, gene := rownames(dge$counts)]
 
-zinb_model <- glmmTMB(normalized_counts ~ subtype + (1|gene) + offset(log(total_counts)),
-                      zi=~subtype,
-                      family=zinb(),
-                      data=your_data_frame)
+set.seed(123) # Setting seed for reproducibility
+count_matrix_dt <- count_matrix_dt[sample(nrow(count_matrix_dt), 100), ]
+
+total_counts_raw <- colSums(dge$counts)
+names(total_counts_raw) <- colnames(dge$counts)
+
+count_matrix_long <- setDT(melt(count_matrix_dt, id.vars = "gene", variable.name = "sample", value.name = "gene_expression"))
+count_matrix_long[, total_counts := total_counts_raw[sample], by = sample]
+
+subtype_info_dt <- setDT(as.data.frame(cbind(sample = dge$samples$sample_name, subtype = dge$samples$subtype)))
+final_df <- merge(count_matrix_long, subtype_info_dt, by = "sample", all.x = TRUE)
 
 
 
+# Fit the Zero-Inflated Negative Binomial (ZINB) Model to the data
+zinb_model <- glmmTMB(gene_expression ~ subtype + offset(log(total_counts)),
+                      zi = ~ subtype,
+                      family = nbinom2,  # This specifies a negative binomial distribution
+                      data = final_df)
 
+final_df$predicted_counts <- predict(zinb_model, type = "response")
+rownames(count_matrix_dt) <- count_matrix_dt$gene
+count_matrix_dt <- as.matrix(count_matrix_dt[ , -122])
+
+
+# For all samples in the count matrix, replace the zeros with the predicted counts
+for (sample_id in colnames(count_matrix_dt)) {
+  predicted_count <- unique(final_df$predicted_counts[final_df$sample == sample_id])
+  zero_rows <- which(count_matrix_dt[[sample_id]] == 0)
+  count_matrix_dt[zero_rows, (sample_id) := predicted_count]  
+}
 
 # Check the missing values
-sum(is.na(dge$counts))
-sum(dge$counts == 0)
+sum(is.na(count_matrix_dt))
+sum(count_matrix_dt == 0)
+
+# Create dge, estimate dispersions, and normalize the data using TMM
+dge <- DGEList(counts = count_matrix_dt)
+dge <- estimateDisp(dge)
+dge <- calcNormFactors(dge, method = "TMM")  # Perform TMM normalization within DGEList
+
+
 
 # Extract normalized counts from the model object
 norm_counts <- hurdle_fit$Sol  
