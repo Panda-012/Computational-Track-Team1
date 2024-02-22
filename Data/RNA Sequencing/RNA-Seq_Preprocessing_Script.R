@@ -64,31 +64,32 @@ dge <- estimateDisp(dge)
 dge <- calcNormFactors(dge, method = "TMM")  # Perform TMM normalization within DGEList
 
 # Attach sample information dataframe as an additional component to the dge list
-dge$samples <- cbind(dge$samples, data.frame(sample_name = colnames(dge$counts),
+dge$samples <- cbind(dge$samples, data.frame(sample = colnames(dge$counts),
                           subtype = rep(NA, length(colnames(dge$counts)))))
 
 dge$samples$subtype <- ifelse(colnames(dge$counts) %in% LumA, "Luminal_A",
                        ifelse(colnames(dge$counts) %in% LumB, "Luminal_B",
                        ifelse(colnames(dge$counts) %in% Normal, "Normal", NA)))
 
-###############################################################
-
 # Fit the data to the Zero-Inflated Negative Binomial (ZINB) Model requirements
-count_matrix_dt <- as.data.table(dge$counts)
-count_matrix_dt[, gene := rownames(dge$counts)]
+count_matrix <- as.data.table(round(dge$counts))
+count_matrix[, gene := rownames(dge$counts)]
 
+###$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 set.seed(123) # Setting seed for reproducibility
-count_matrix_dt <- count_matrix_dt[sample(nrow(count_matrix_dt), 100), ]
+count_matrix <- count_matrix[sample(nrow(count_matrix), 30000), ]
+###$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
 
 total_counts_raw <- colSums(dge$counts)
 names(total_counts_raw) <- colnames(dge$counts)
 
-count_matrix_long <- setDT(melt(count_matrix_dt, id.vars = "gene", variable.name = "sample", value.name = "gene_expression"))
+count_matrix_long <- setDT(melt(count_matrix, id.vars = "gene", variable.name = "sample", value.name = "gene_expression"))
 count_matrix_long[, total_counts := total_counts_raw[sample], by = sample]
 
-subtype_info_dt <- setDT(as.data.frame(cbind(sample = dge$samples$sample_name, subtype = dge$samples$subtype)))
-final_df <- merge(count_matrix_long, subtype_info_dt, by = "sample", all.x = TRUE)
-
+final_df <- merge(count_matrix_long, dge$samples [, c("sample" , "subtype")], by = "sample", all.x = TRUE)
+count_matrix <- as.data.frame (count_matrix)
+rownames (count_matrix) <- count_matrix$gene
+count_matrix <- as.data.frame (count_matrix [, -122])
 
 
 # Fit the Zero-Inflated Negative Binomial (ZINB) Model to the data
@@ -98,15 +99,27 @@ zinb_model <- glmmTMB(gene_expression ~ subtype + offset(log(total_counts)),
                       data = final_df)
 
 final_df$predicted_counts <- predict(zinb_model, type = "response")
-rownames(count_matrix_dt) <- count_matrix_dt$gene
-count_matrix_dt <- as.matrix(count_matrix_dt[ , -122])
+final_df$zero_inflation_prob <- predict(zinb_model, type = "zprob")
 
 
-# For all samples in the count matrix, replace the zeros with the predicted counts
-for (sample_id in colnames(count_matrix_dt)) {
-  predicted_count <- unique(final_df$predicted_counts[final_df$sample == sample_id])
-  zero_rows <- which(count_matrix_dt[[sample_id]] == 0)
-  count_matrix_dt[zero_rows, (sample_id) := predicted_count]  
+#####################################################################################
+# Define a threshold for zero-inflation probability to identify excess zeros
+quantiles <- quantile(final_df$zero_inflation_prob, probs = seq(0, 1, 0.05))
+excess_zero_threshold <-  quantiles["95%"]
+# Plot the distribution of zero-inflation probabilities
+hist(final_df$zero_inflation_prob, breaks = 50, main = "Distribution of Zero-Inflation Probabilities", xlab = "Zero-Inflation Probability")
+
+# Add a line for the 95% quantile threshold
+abline(v = quantiles["95%"], col = "red", lwd = 2, lty = 2)
+legend("topright", legend = paste("95% Threshold:", round(quantiles["95%"], 10)), col = "red", lwd = 2, lty = 2)
+#####################################################################################
+
+# For all samples in the count matrix, replace excess zeros with the predicted counts
+for (i in 1:nrow(final_df)){
+  current_observation <- final_df[i]
+  if (current_observation$gene_expression == 0 && current_observation$zero_inflation_prob > excess_zero_threshold) {
+    count_matrix[current_observation$gene, current_observation$sample] <- current_observation$predicted_counts
+  }
 }
 
 # Check the missing values
@@ -124,12 +137,6 @@ dge <- calcNormFactors(dge, method = "TMM")  # Perform TMM normalization within 
 norm_counts <- hurdle_fit$Sol  
 sum(norm_counts == 0)
 length(boxplot.stats(norm_counts)$out)
-
-
-
-################################################################
-
-
 
 # Identify outliers (visually and statistically)
 boxplot(norm_counts)
