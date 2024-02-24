@@ -59,7 +59,7 @@ table(PAM50Preds$subtype)
 rm(list=setdiff(ls(), c("LumA", "LumB", "Basal", "Her2", "Normal", Environment_Data)))
 
 # Create dge, estimate dispersions, and normalize the data using TMM
-dge <- DGEList(counts = count_matrix[, c(LumA, LumB, Normal), drop = FALSE])
+dge <- DGEList(counts = count_matrix[, c(LumA, LumB), drop = FALSE])
 dge <- estimateDisp(dge)
 dge <- calcNormFactors(dge, method = "TMM")  # Perform TMM normalization within DGEList
 
@@ -68,78 +68,43 @@ dge$samples <- cbind(dge$samples, data.frame(sample = colnames(dge$counts),
                           subtype = rep(NA, length(colnames(dge$counts)))))
 
 dge$samples$subtype <- ifelse(colnames(dge$counts) %in% LumA, "Luminal_A",
-                       ifelse(colnames(dge$counts) %in% LumB, "Luminal_B",
-                       ifelse(colnames(dge$counts) %in% Normal, "Normal", NA)))
+                       ifelse(colnames(dge$counts) %in% LumB, "Luminal_B", NA))
 
-# Fit the data to the Zero-Inflated Negative Binomial (ZINB) Model requirements
-count_matrix <- as.data.table(round(dge$counts))
-count_matrix[, gene := rownames(dge$counts)]
-
-###$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-set.seed(123) # Setting seed for reproducibility
-count_matrix <- count_matrix[sample(nrow(count_matrix), 30000), ]
-###$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
-
-total_counts_raw <- colSums(dge$counts)
-names(total_counts_raw) <- colnames(dge$counts)
-
-count_matrix_long <- setDT(melt(count_matrix, id.vars = "gene", variable.name = "sample", value.name = "gene_expression"))
-count_matrix_long[, total_counts := total_counts_raw[sample], by = sample]
-
-final_df <- merge(count_matrix_long, dge$samples [, c("sample" , "subtype")], by = "sample", all.x = TRUE)
-count_matrix <- as.data.frame (count_matrix)
-rownames (count_matrix) <- count_matrix$gene
-count_matrix <- as.data.frame (count_matrix [, -122])
-
-
-# Fit the Zero-Inflated Negative Binomial (ZINB) Model to the data
-zinb_model <- glmmTMB(gene_expression ~ subtype + offset(log(total_counts)),
-                      zi = ~ subtype,
-                      family = nbinom2,  # This specifies a negative binomial distribution
-                      data = final_df)
-
-final_df$predicted_counts <- predict(zinb_model, type = "response")
-final_df$zero_inflation_prob <- predict(zinb_model, type = "zprob")
+##################################################################################################
+# # Fit the data to the Zero-Inflated Negative Binomial (ZINB) Model requirements
+# count_matrix <- as.data.table(round(dge$counts))
+# count_matrix[, gene := rownames(dge$counts)]
+# 
+# total_counts_raw <- colSums(dge$counts)
+# names(total_counts_raw) <- colnames(dge$counts)
+# 
+# count_matrix_long <- setDT(melt(count_matrix, id.vars = "gene", variable.name = "sample", value.name = "gene_expression"))
+# count_matrix_long[, total_counts := total_counts_raw[sample], by = sample]
+# 
+# final_df <- merge(count_matrix_long, dge$samples [, c("sample" , "subtype")], by = "sample", all.x = TRUE)
+# count_matrix <- as.data.frame (count_matrix)
+# rownames (count_matrix) <- count_matrix$gene
+# count_matrix <- as.data.frame (count_matrix [, -122])
+# 
+# 
+# # Fit the Zero-Inflated Negative Binomial (ZINB) Model to the data
+# zinb_model <- glmmTMB(gene_expression ~ subtype + offset(log(total_counts)),
+#                       zi = ~ subtype,
+#                       family = nbinom2,  # This specifies a negative binomial distribution
+#                       data = final_df)
+# 
+# final_df$predicted_counts <- predict(zinb_model, type = "response")
+# final_df$zero_inflation_prob <- predict(zinb_model, type = "zprob")
+##################################################################################################
 
 
-#####################################################################################
-# Define a threshold for zero-inflation probability to identify excess zeros
-quantiles <- quantile(final_df$zero_inflation_prob, probs = seq(0, 1, 0.05))
-excess_zero_threshold <-  quantiles["95%"]
-# Plot the distribution of zero-inflation probabilities
-hist(final_df$zero_inflation_prob, breaks = 50, main = "Distribution of Zero-Inflation Probabilities", xlab = "Zero-Inflation Probability")
-
-# Add a line for the 95% quantile threshold
-abline(v = quantiles["95%"], col = "red", lwd = 2, lty = 2)
-legend("topright", legend = paste("95% Threshold:", round(quantiles["95%"], 10)), col = "red", lwd = 2, lty = 2)
-#####################################################################################
-
-# For all samples in the count matrix, replace excess zeros with the predicted counts
-for (i in 1:nrow(final_df)){
-  current_observation <- final_df[i]
-  if (current_observation$gene_expression == 0 && current_observation$zero_inflation_prob > excess_zero_threshold) {
-    count_matrix[current_observation$gene, current_observation$sample] <- current_observation$predicted_counts
-  }
-}
-
-# Check the missing values
-sum(is.na(count_matrix_dt))
-sum(count_matrix_dt == 0)
-
-# Create dge, estimate dispersions, and normalize the data using TMM
-dge <- DGEList(counts = count_matrix_dt)
-dge <- estimateDisp(dge)
-dge <- calcNormFactors(dge, method = "TMM")  # Perform TMM normalization within DGEList
-
-
-
-# Extract normalized counts from the model object
-norm_counts <- hurdle_fit$Sol  
-sum(norm_counts == 0)
-length(boxplot.stats(norm_counts)$out)
 
 # Identify outliers (visually and statistically)
+norm_counts <- cpm(dge, normalized.lib.size = TRUE)
+length(boxplot.stats(norm_counts)$out)
 boxplot(norm_counts)
+
+# Quality check
 affy::plotDensity(norm_counts)
 plot(density(apply(norm_counts, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
 plotMDS(norm_counts)

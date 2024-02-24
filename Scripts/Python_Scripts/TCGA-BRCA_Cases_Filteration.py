@@ -21,11 +21,11 @@ def filter_cases(file_path):
     return filtered_case_ids
 
 # Replace with the path to your JSON file
-file_path = 'RNA-Seq_Clinical_Data.json'
+file_path = 'TCGA-BRCA_Clinical_Data.json'
 filtered_case_ids = filter_cases(file_path)
 
 # Save filtered_case_ids to a .txt file
-file_output_path = 'RNA-Seq_Filtered_Case_IDs.txt'
+file_output_path = 'TCGA-BRCA_Filtered_Case_IDs.txt'
 with open(file_output_path, 'w') as file_out:
     for case_id in filtered_case_ids:
         file_out.write(case_id + '\n')
