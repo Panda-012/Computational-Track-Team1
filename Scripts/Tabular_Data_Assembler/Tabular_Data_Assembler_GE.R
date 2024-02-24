@@ -19,7 +19,7 @@ for (i in 1:nrow(metadata)) {
 # Prepare the replicates samples for later name handling
 replicates <- data.frame (
   id = unique(metadata$case_id[which(duplicated(metadata$case_id))]),
-  count = rep(0, 14)
+  count = rep(0, length(unique(metadata$case_id[which(duplicated(metadata$case_id))])))
   )
 
 # Check if the result file exists and delete it if it does
