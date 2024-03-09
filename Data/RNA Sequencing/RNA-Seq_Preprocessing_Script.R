@@ -2,14 +2,11 @@
 library(readr)
 library(limma)
 library(Rtsne)
-library(DESeq2)
 library(edgeR)
-library(pscl)
 library(glmmTMB)
 library(data.table)
 library(reshape2) # For melt function
 library(dplyr) # For data manipulation
-library(MCMCglmm)  # For fitting hurdle models
 library(jsonlite)  # For loading metadata and clinical data
 
 # Set working directory and load the data
@@ -97,8 +94,6 @@ dge$samples$subtype <- ifelse(colnames(dge$counts) %in% LumA, "Luminal_A",
 # final_df$zero_inflation_prob <- predict(zinb_model, type = "zprob")
 ##################################################################################################
 
-
-
 # Identify outliers (visually and statistically)
 norm_counts <- cpm(dge, normalized.lib.size = TRUE)
 length(boxplot.stats(norm_counts)$out)
@@ -110,16 +105,10 @@ plot(density(apply(norm_counts, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.
 plotMDS(norm_counts)
 
 
-
 # Filter lowly expressed genes
 keep <- rowSums(norm_counts >= 10) >= 5  # Adjust thresholds as needed
 norm_counts <- norm_counts[keep, ]
 
-# --- Normalization ---
-
-# Calculate normalization factors (e.g., using edgeR)
-norm_factors <- calcNormFactors(norm_counts)
-count_matrix_norm <- t(t(norm_counts) / norm_factors)
 
 # Reassess quality after normalization
 boxplot(count_matrix_norm)
@@ -128,18 +117,23 @@ plotMDS(count_matrix_norm)
 # --- Dimensionality reduction ---
 
 # Perform PCA
-pca_results <- prcomp(t(count_matrix_norm), center = TRUE, scale. = TRUE)
+pca_results <- prcomp(t(data_matrix_normalized), center = TRUE, scale. = TRUE)
 
 # Visualize PCA results
-plot(pca_results$x)  # Color by metadata or clinical variables later
+plot(pca_results$x, col = sample_colors)
+legend("topright", legend = c( "Luminal_B", "Luminal_A", "Normal"), col = unique(sample_colors), pch = 1, cex = 0.8)
+
 
 # Create Elbow Graph
 variance_explained <- pca_results$sdev^2 / sum(pca_results$sdev^2) * 100
-plot(1:length(variance_explained), variance_explained, type = "b", pch = 20)
+plot(1:length(variance_explained), variance_explained, type = "b", pch = 19)
+abline(h = 3, col = "red", lty = 2)  # Optional threshold for selecting PCs
 
 # Perform t-SNE
-set.seed(123)
-tsne_results <- Rtsne(pca_results$x[, 1:5], perplexity = 23)  # Adjust perplexity
+set.seed(123)  # Set seed for reproducibility
+tsne_results <- Rtsne(pca_results$x[, 1:5], perplexity = 23)  # Adjust perplexity if needed
 
 # Visualize t-SNE results
-plot(tsne_results$Y)  # Color by metadata or clinical variables later
+plot(tsne_results$Y, col = sample_colors)
+legend("bottomleft", legend = c( "Luminal_B", "Luminal_A", "Normal"), col = unique(sample_colors), pch = 1, cex = 0.8)
+
