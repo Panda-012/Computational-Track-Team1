@@ -4,6 +4,7 @@ library(limma)
 library(Rtsne)
 library(edgeR)
 library(glmmTMB)
+library(e1071)
 library(data.table)
 library(reshape2) # For melt function
 library(dplyr) # For data manipulation
@@ -32,8 +33,6 @@ for (i in 1:nrow(metadata)) {
   matching_record <- metadata[grep(metadata$file_name[[i]], metadata$file_name), ]
   metadata$case_id[i] <- matching_record$associated_entities[[1]]$case_id
 }
-
-# --- Quality control and filtering ---
 rm (matching_record,i)
 
 # Check for duplicate gene names
@@ -43,9 +42,8 @@ sum(duplicated(rownames(count_matrix)))
 sum(is.na(count_matrix))
 sum(count_matrix == 0)
 
-# Create dge, estimate dispersions, and normalize the data using TMM
+# Create dge and normalize the data using TMM
 dge <- DGEList(counts = count_matrix)
-dge <- estimateDisp(dge)
 dge <- calcNormFactors(dge, method = "TMM")  # Perform TMM normalization within DGEList
 
 # Subtyping of samples via external R script
@@ -53,19 +51,53 @@ Environment_Data <- ls()
 Sisi <- cpm(dge, normalized.lib.size = TRUE)
 source("Breast_Cancer_Subtyping.R")
 table(PAM50Preds$subtype)
-rm(list=setdiff(ls(), c("LumA", "LumB", "Basal", "Her2", "Normal", Environment_Data)))
 
-# Create dge, estimate dispersions, and normalize the data using TMM
-dge <- DGEList(counts = count_matrix[, c(LumA, LumB), drop = FALSE])
-dge <- estimateDisp(dge)
-dge <- calcNormFactors(dge, method = "TMM")  # Perform TMM normalization within DGEList
+# Filter the selected samples and start renaming them
+data_matrix <- count_matrix[, c(LumA, LumB), drop = FALSE]
+combined_samples <- c(LumA, LumB)
+new_sample_names <- character(length(combined_samples))
 
-# Attach sample information dataframe as an additional component to the dge list
-dge$samples <- cbind(dge$samples, data.frame(sample = colnames(dge$counts),
-                          subtype = rep(NA, length(colnames(dge$counts)))))
+# Loop through the combined sample names to generate new names
+for (i in seq_along(combined_samples)) {
+  prefix <- ifelse(combined_samples[i] %in% LumA, "LumA_", "LumB_")
+  seq_num <- sum(startsWith(new_sample_names, prefix)) + 1
+  new_sample_names[i] <- paste0(prefix, sprintf("%02d", seq_num))
+}
 
-dge$samples$subtype <- ifelse(colnames(dge$counts) %in% LumA, "Luminal_A",
-                       ifelse(colnames(dge$counts) %in% LumB, "Luminal_B", NA))
+colnames(data_matrix) <- new_sample_names
+sample_colors <- ifelse(startsWith(colnames(data_matrix), "LumB"), "red", "orange")
+
+# Assess quality before processing
+affy::plotDensity(data_matrix)
+plot(density(apply(data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
+plotMDS(data_matrix)
+
+# Calculate median expression level across genes and median absolute deviation (MAD) for each gene
+median_expression <- apply(data_matrix, 1, median)
+mad_expression <- apply(data_matrix, 1, function(x) mad(x, constant = 1))
+
+# Dynamically set mad_multiplier based on skewness
+data_skewness <- skewness(log1p(rowMedians(data_matrix)))
+mad_multiplier <- ifelse(data_skewness <= 1, 1.5, ifelse(data_skewness <= 2, 2, 2.5))
+
+# Combine median and MAD for a robust measure of gene expression variability
+threshold_expression <- median_expression + (mad_multiplier * mad_expression)
+
+# Dynamically set samples_threshold based on overall expression density using a gradient approach
+overall_non_zero_proportion <- mean(rowSums(data_matrix > 0)) / ncol(data_matrix)
+samples_threshold <- 0.05 + (0.15 * (1 - overall_non_zero_proportion))
+
+# Identify genes to keep based on the threshold and filter data based on the keep_genes logical vector
+keep_genes <- rowSums(data_matrix >= threshold_expression) >= (samples_threshold * ncol(data_matrix))
+filtered_data_matrix <- data_matrix[keep_genes, ]
+
+# After filtering, clean up the environment from temporary variables
+rm(list=setdiff(ls(), c("LumA", "LumB", "Basal", "Her2", "Normal", Environment_Data, "data_matrix", "filtered_data_matrix")))
+
+# Reassess quality after filtration
+affy::plotDensity(filtered_data_matrix)
+plot(density(apply(filtered_data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
+plotMDS(filtered_data_matrix)
 
 ##################################################################################################
 # # Fit the data to the Zero-Inflated Negative Binomial (ZINB) Model requirements
@@ -95,45 +127,67 @@ dge$samples$subtype <- ifelse(colnames(dge$counts) %in% LumA, "Luminal_A",
 ##################################################################################################
 
 # Identify outliers (visually and statistically)
-norm_counts <- cpm(dge, normalized.lib.size = TRUE)
-length(boxplot.stats(norm_counts)$out)
-boxplot(norm_counts)
+# boxplot(filtered_data_matrix)
+length(boxplot.stats(filtered_data_matrix)$out)
 
-# Quality check
-affy::plotDensity(norm_counts)
-plot(density(apply(norm_counts, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
-plotMDS(norm_counts)
+# Create dge and normalize the data using TMM
+dge <- DGEList(counts = filtered_data_matrix)
+dge <- calcNormFactors(dge, method = "TMM")  # Perform TMM normalization within DGEList
 
+# Apply log2 transformation to stabilize variance
+log_data_matrix <- cpm(dge, log = TRUE, prior.count = 1)
+length(boxplot.stats(log_data_matrix)$out)
 
-# Filter lowly expressed genes
-keep <- rowSums(norm_counts >= 10) >= 5  # Adjust thresholds as needed
-norm_counts <- norm_counts[keep, ]
+# Reassess quality after log transformation
+affy::plotDensity(log_data_matrix)
+plot(density(apply(log_data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
+plotMDS(log_data_matrix)
 
+# Function to adjust outliers directly within a single vector of gene expression values
+Environment_Data <- ls()
+adjust_outliers_directly <- function(gene_expression) {
+  # Constants for outlier detection
+  k <- 3 # Adjust k as needed for stricter or looser criteria
+  
+  # Compute lower and upper bounds for this gene
+  gene_mad <- mad(gene_expression, constant = 1)
+  gene_median <- median(gene_expression)
+  lb <- gene_median - k * gene_mad
+  ub <- gene_median + k * gene_mad
+  
+  # Adjust outliers to the nearest value within the non-outlier range
+  gene_expression[gene_expression < lb] <- lb
+  gene_expression[gene_expression > ub] <- ub
+  
+  return(gene_expression)
+}
 
-# Reassess quality after normalization
-boxplot(count_matrix_norm)
-plotMDS(count_matrix_norm)
+# Apply the direct adjustment of outliers across all genes
+adjusted_log_data_matrix <- t(apply(log_data_matrix, 1, adjust_outliers_directly))
+length(boxplot.stats(adjusted_log_data_matrix)$out)
+rm(list=setdiff(ls(), c(Environment_Data, "adjust_outliers_directly", "adjusted_log_data_matrix")))
 
-# --- Dimensionality reduction ---
+# Reassess quality after handling outliers
+affy::plotDensity(adjusted_log_data_matrix)
+plot(density(apply(adjusted_log_data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
+plotMDS(adjusted_log_data_matrix)
 
 # Perform PCA
-pca_results <- prcomp(t(data_matrix_normalized), center = TRUE, scale. = TRUE)
+pca_results <- prcomp(t(adjusted_log_data_matrix), center = TRUE, scale. = FALSE)
 
 # Visualize PCA results
 plot(pca_results$x, col = sample_colors)
-legend("topright", legend = c( "Luminal_B", "Luminal_A", "Normal"), col = unique(sample_colors), pch = 1, cex = 0.8)
-
+legend("topright", legend = c("Luminal_A", "Luminal_B"), col = unique(sample_colors), pch = 1, cex = 0.8)
 
 # Create Elbow Graph
 variance_explained <- pca_results$sdev^2 / sum(pca_results$sdev^2) * 100
 plot(1:length(variance_explained), variance_explained, type = "b", pch = 19)
-abline(h = 3, col = "red", lty = 2)  # Optional threshold for selecting PCs
+abline(h = 1, col = "red", lty = 2)  # Optional threshold for selecting PCs
 
 # Perform t-SNE
 set.seed(123)  # Set seed for reproducibility
-tsne_results <- Rtsne(pca_results$x[, 1:5], perplexity = 23)  # Adjust perplexity if needed
+tsne_results <- Rtsne(pca_results$x[, 1:15], perplexity = 20)  # Adjust perplexity if needed
 
 # Visualize t-SNE results
 plot(tsne_results$Y, col = sample_colors)
-legend("bottomleft", legend = c( "Luminal_B", "Luminal_A", "Normal"), col = unique(sample_colors), pch = 1, cex = 0.8)
-
+legend("topleft", legend = c("Luminal_A", "Luminal_B"), col = unique(sample_colors), pch = 1, cex = 0.8)

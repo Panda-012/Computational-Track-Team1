@@ -57,7 +57,6 @@ consensus_outliers <- apply(log_data_matrix, 1, function(x) {
   return(NA)  # If there's no consensus, or an NA was encountered, return NA
 })
 
-
 # Apply Winsorization to the log-transformed data using consensus outliers
 data_matrix_winsorized <- t(apply(log_data_matrix, 1, function(x) {
   # If there is a consensus outlier for the row, perform Winsorization
@@ -93,18 +92,17 @@ pca_results <- prcomp(t(data_matrix_normalized), center = TRUE, scale. = FALSE)
 
 # Visualize PCA results
 plot(pca_results$x, col = sample_colors)
-legend("topright", legend = c( "Luminal_B", "Luminal_A", "Normal"), col = unique(sample_colors), pch = 1, cex = 0.8)
-
+legend("bottomright", legend = c( "Luminal_B", "Luminal_A", "Normal"), col = unique(sample_colors), pch = 1, cex = 0.8)
 
 # Create Elbow Graph
 variance_explained <- pca_results$sdev^2 / sum(pca_results$sdev^2) * 100
 plot(1:length(variance_explained), variance_explained, type = "b", pch = 19)
-abline(h = 3, col = "red", lty = 2)  # Optional threshold for selecting PCs
+abline(h = 2, col = "red", lty = 2)  # Optional threshold for selecting PCs
 
 # Perform t-SNE
 set.seed(123)  # Set seed for reproducibility
-tsne_results <- Rtsne(pca_results$x[, 1:5], perplexity = 23)  # Adjust perplexity if needed
+tsne_results <- Rtsne(pca_results$x[, 1:10], perplexity = 5)  # Adjust perplexity if needed
 
 # Visualize t-SNE results
 plot(tsne_results$Y, col = sample_colors)
-legend("topright", legend = c( "Luminal_B", "Luminal_A", "Normal"), col = unique(sample_colors), pch = 1, cex = 0.8)
+legend("bottomleft", legend = c( "Luminal_B", "Luminal_A", "Normal"), col = unique(sample_colors), pch = 1, cex = 0.8)
