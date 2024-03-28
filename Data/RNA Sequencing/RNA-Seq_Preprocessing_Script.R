@@ -51,6 +51,8 @@ Environment_Data <- ls()
 Sisi <- cpm(dge, normalized.lib.size = TRUE)
 source("Breast_Cancer_Subtyping.R")
 table(PAM50Preds$subtype)
+save(LumA, LumB, Her2, Basal, Normal, file = "../luminal_samples.RData")
+
 
 # Filter the selected samples and start renaming them
 data_matrix <- count_matrix[, c(LumA, LumB), drop = FALSE]
@@ -92,7 +94,7 @@ keep_genes <- rowSums(data_matrix >= threshold_expression) >= (samples_threshold
 filtered_data_matrix <- data_matrix[keep_genes, ]
 
 # After filtering, clean up the environment from temporary variables
-rm(list=setdiff(ls(), c("LumA", "LumB", "Basal", "Her2", "Normal", Environment_Data, "data_matrix", "filtered_data_matrix")))
+rm(list=setdiff(ls(), c("LumA", "LumB", "Basal", "Her2", "Normal", Environment_Data, "data_matrix", "filtered_data_matrix", "sample_colors")))
 
 # Reassess quality after filtration
 affy::plotDensity(filtered_data_matrix)

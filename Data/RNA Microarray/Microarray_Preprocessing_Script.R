@@ -88,7 +88,7 @@ plot(density(apply(data_matrix_normalized, 2, mean, na.rm = TRUE)),main="omics",
 plotMDS(data_matrix_winsorized)
 
 # Perform PCA
-pca_results <- prcomp(t(data_matrix_normalized), center = TRUE, scale. = FALSE)
+pca_results <- prcomp(t(data_matrix_normalized), center = TRUE, scale. = TRUE)
 
 # Visualize PCA results
 plot(pca_results$x, col = sample_colors)

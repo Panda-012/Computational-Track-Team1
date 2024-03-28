@@ -28,7 +28,7 @@ if (file.exists(result_file)) {
   file.remove(result_file)
 }
 
-# List all TXT or TSV files in the current directory
+# List all TSV files in the current directory
 file_list <- list.files(pattern = "\\.tsv", recursive = TRUE)
 
 # Initialize an empty character vector to store all identifiers
@@ -64,11 +64,6 @@ for (file in file_list) {
   
   # Find matching indices between current_rownames and max_rownames
   match_indices <- match(current_rownames, max_rownames)
-  
-  class(current_rownames)
-  class(max_rownames)
-  
-  
   
   # Update mapped_values with matching values
   mapped_values[match_indices[!is.na(match_indices)]] <- current_col[!is.na(match_indices)]
