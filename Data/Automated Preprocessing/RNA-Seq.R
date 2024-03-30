@@ -1,16 +1,37 @@
 # Load necessary libraries
 library(readr)
-library(limma)
 library(edgeR)
 library(biomaRt)
 library(dplyr)
+library(e1071) # For calculating skewness
+library(limma) # For general data processing
 
-# Function to preprocess count matrix: loads data, maps Ensembl IDs, aggregates duplicates
+# Main function to preprocess the RNA-seq count matrix
 preprocess_count_matrix <- function(file_path, dataset = "hsapiens_gene_ensembl") {
-  # Determine file extension to decide on read function
+  # Load the RNA-Seq count matrix
+  count_matrix <- load_count_matrix(file_path)
+  
+  # Map Ensembl IDs to gene symbols and aggregate duplicate symbols
+  count_matrix <- map_and_aggregate(count_matrix, dataset)
+  
+  # Filter lowly-expressed genes and handle any potential zeros
+  filtered_log_count_matrix <- filter_lowly_expressed_genes(count_matrix)
+  
+  # Handle zeros if there is any
+  if (sum(filtered_log_count_matrix == 0) != 0){
+    filtered_log_count_matrix <- handle_zeros (filtered_log_count_matrix)
+  }
+  
+  # Adjust for outliers
+  final_count_matrix <- adjust_outliers(filtered_log_count_matrix)
+  
+  return(final_count_matrix)
+}
+
+# Function to load count matrix from CSV or TSV
+load_count_matrix <- function(file_path) {
   file_extension <- tools::file_ext(file_path)
   
-  # Load the RNA-Seq count matrix based on the file type
   if (file_extension == "csv") {
     count_matrix <- read.csv(file_path, stringsAsFactors = FALSE)
   } else if (file_extension == "tsv") {
@@ -19,29 +40,25 @@ preprocess_count_matrix <- function(file_path, dataset = "hsapiens_gene_ensembl"
     stop("Unsupported file type. Please provide a CSV or TSV file.")
   }
   
-  # Clean the Ensembl IDs by removing version numbers
+  return(count_matrix)
+}
+
+# Function to map Ensembl IDs to gene symbols and aggregate duplicates
+map_and_aggregate <- function(count_matrix, dataset) {
   ensembl_ids <- sub("\\..*$", "", count_matrix[, 1]) 
-  
-  # Connect to the Ensembl database
   ensembl <- biomaRt::useMart("ensembl", dataset = dataset)
   
-  # Fetch gene symbols for the cleaned Ensembl IDs
   gene_symbols <- biomaRt::getBM(attributes = c('ensembl_gene_id', 'external_gene_name'), 
                                  filters = 'ensembl_gene_id', 
                                  values = ensembl_ids, 
                                  mart = ensembl)
   
-  # Replace missing gene symbols with NA for easier filtering
   gene_symbols$external_gene_name[gene_symbols$external_gene_name == ""] <- NA
-  
-  # Map Ensembl IDs to gene symbols
   id_to_symbol_map <- setNames(gene_symbols$external_gene_name, gene_symbols$ensembl_gene_id)
   count_matrix[, 1] <- id_to_symbol_map[ensembl_ids]
+  count_matrix <- count_matrix[!is.na(count_matrix[, 1]), ]
   
-  # Remove rows with missing gene symbols
-  count_matrix <- count_matrix[!(is.na(count_matrix[, 1])), ]
-  
-  # Aggregate duplicate gene symbols by summing their counts
+  # Aggregate duplicate gene symbols
   if (anyDuplicated(count_matrix[, 1])) {
     count_matrix <- count_matrix %>%
       group_by(Gene = count_matrix[, 1]) %>%
@@ -50,26 +67,55 @@ preprocess_count_matrix <- function(file_path, dataset = "hsapiens_gene_ensembl"
   }
   
   # Convert to a matrix for further analysis
-  rownames(count_matrix) <- as.character(count_matrix[, 1])
-  count_matrix <- count_matrix[, -1]
-  count_matrix <- as.matrix(count_matrix)
+  rownames(count_matrix) <- count_matrix$Gene
+  count_matrix <- as.matrix(count_matrix[, -1])
   
-  # apply normalization and outliers handling function
-  adjusted_log_count_matrix <- normalize_and_adjust_outliers(count_matrix)
-  return (adjusted_log_count_matrix)
+  return(count_matrix)
 }
 
-# Function to normalize count matrix and adjust for outliers
-normalize_and_adjust_outliers <- function(count_matrix) {
-  # Create a DGEList object for normalization
+# Function to filter lowly-expressed genes
+filter_lowly_expressed_genes <- function(count_matrix){
+  # Normalize the data using the TMM method from edgeR
   dge <- DGEList(counts = count_matrix)
-  
-  # Normalize the data using the TMM method
   dge <- calcNormFactors(dge, method = "TMM")
-  
-  # Log-transform the counts for variance stabilization
   log_count_matrix <- cpm(dge, log = TRUE, prior.count = 1)
   
+  # Assess gene expression variability
+  median_expression <- apply(log_count_matrix, 1, median)
+  mad_expression <- apply(log_count_matrix, 1, mad)
+  data_skewness <- skewness(median_expression)
+  mad_multiplier <- ifelse(data_skewness <= 1, 1.5, ifelse(data_skewness <= 2, 2, 2.5))
+  threshold_expression <- median_expression + (mad_multiplier * mad_expression)
+  
+  # Filter genes with low expression variability
+  keep_genes <- mad_expression > quantile(mad_expression, 0.25)  # Keep genes with highest variability
+  filtered_log_count_matrix <- log_count_matrix[keep_genes, ]
+  
+  # RNA-seq data typically should not have missing values post-normalization
+  if(any(is.na(filtered_log_count_matrix))) {
+    # Dynamic thresholding based on the distribution of missing values
+    missing_per_gene <- colSums(is.na(filtered_log_count_matrix)) / nrow(filtered_log_count_matrix)
+    missing_per_sample <- rowSums(is.na(filtered_log_count_matrix)) / ncol(filtered_log_count_matrix)
+    gene_missing_threshold <- mean(missing_per_gene) + sd(missing_per_gene)
+    sample_missing_threshold <- mean(missing_per_sample) + sd(missing_per_sample)
+    
+    # Filter based on missing data thresholds
+    filtered_log_count_matrix <- filtered_log_count_matrix[rowSums(is.na(filtered_log_count_matrix)) / ncol(filtered_log_count_matrix) < sample_missing_threshold, ]
+    filtered_log_count_matrix <- filtered_log_count_matrix[, colSums(is.na(filtered_log_count_matrix)) / nrow(filtered_log_count_matrix) < gene_missing_threshold]
+  }
+  
+  return(filtered_log_count_matrix)
+}
+
+# Function to handle zeros
+handle_zeros <- function(filtered_log_count_matrix){
+  handled_count_matrix <- filtered_log_count_matrix
+  
+  return(handled_count_matrix)
+}
+
+# Function to adjust for outliers
+adjust_outliers <- function(filtered_log_count_matrix) {
   # Function to adjust outliers within a single vector of gene expression values
   adjust_outliers_directly <- function(gene_expression) {
     # Constants for outlier detection
@@ -86,7 +132,7 @@ normalize_and_adjust_outliers <- function(count_matrix) {
   }
   
   # Apply the outlier adjustment across all genes
-  adjusted_log_count_matrix <- t(apply(log_count_matrix, 1, adjust_outliers_directly))
+  adjusted_log_count_matrix <- t(apply(filtered_log_count_matrix, 1, adjust_outliers_directly))
   
   return(adjusted_log_count_matrix)
 }
