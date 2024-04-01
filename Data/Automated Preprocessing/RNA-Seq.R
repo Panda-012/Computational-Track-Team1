@@ -19,7 +19,7 @@ preprocess_count_matrix <- function(file_path, dataset = "hsapiens_gene_ensembl"
   
   # Handle zeros if there is any
   if (sum(filtered_log_count_matrix == 0) != 0){
-    filtered_log_count_matrix <- handle_zeros (filtered_log_count_matrix)
+    stop("Processing error: Zeros detected in the dataset after processing.")
   }
   
   # Adjust for outliers
@@ -93,6 +93,7 @@ filter_lowly_expressed_genes <- function(count_matrix){
   
   # RNA-seq data typically should not have missing values post-normalization
   if(any(is.na(filtered_log_count_matrix))) {
+    print ("hi")
     # Dynamic thresholding based on the distribution of missing values
     missing_per_gene <- colSums(is.na(filtered_log_count_matrix)) / nrow(filtered_log_count_matrix)
     missing_per_sample <- rowSums(is.na(filtered_log_count_matrix)) / ncol(filtered_log_count_matrix)
@@ -105,13 +106,6 @@ filter_lowly_expressed_genes <- function(count_matrix){
   }
   
   return(filtered_log_count_matrix)
-}
-
-# Function to handle zeros
-handle_zeros <- function(filtered_log_count_matrix){
-  handled_count_matrix <- filtered_log_count_matrix
-  
-  return(handled_count_matrix)
 }
 
 # Function to adjust for outliers
