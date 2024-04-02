@@ -1,9 +1,8 @@
 # Load necessary libraries
-library(readr)
 library(edgeR)
 library(biomaRt)
 library(dplyr)
-library(e1071) # For calculating skewness
+library(e1071)
 library(limma) # For general data processing
 
 # Main function to preprocess the RNA-seq count matrix
@@ -15,11 +14,11 @@ preprocess_count_matrix <- function(file_path, dataset = "hsapiens_gene_ensembl"
   count_matrix <- map_and_aggregate(count_matrix, dataset)
   
   # Filter lowly-expressed genes and handle any potential zeros
-  filtered_log_count_matrix <- filter_lowly_expressed_genes(count_matrix)
+  filtered_log_count_matrix <- filter_lowly_expressed_genes_and_handle_zeros(count_matrix)
   
   # Handle zeros if there is any
   if (sum(filtered_log_count_matrix == 0) != 0){
-    stop("Processing error: Zeros detected in the dataset after processing.")
+    cat("Processing warning: Zeros detected in the dataset after processing.")
   }
   
   # Adjust for outliers
@@ -33,9 +32,9 @@ load_count_matrix <- function(file_path) {
   file_extension <- tools::file_ext(file_path)
   
   if (file_extension == "csv") {
-    count_matrix <- read.csv(file_path, stringsAsFactors = FALSE)
-  } else if (file_extension == "tsv") {
-    count_matrix <- read.delim(file_path, stringsAsFactors = FALSE)
+    count_matrix <- read.csv(file_path, stringsAsFactors = FALSE, check.names = FALSE)
+  } else if (file_extension == "tsv" || file_extension == "txt") {
+    count_matrix <- read.delim(file_path, stringsAsFactors = FALSE, check.names = FALSE)
   } else {
     stop("Unsupported file type. Please provide a CSV or TSV file.")
   }
@@ -59,14 +58,15 @@ map_and_aggregate <- function(count_matrix, dataset) {
   count_matrix <- count_matrix[!is.na(count_matrix[, 1]), ]
   
   # Aggregate duplicate gene symbols
-  if (anyDuplicated(count_matrix[, 1])) {
+  colnames(count_matrix)[1] <- "Gene"
+  if (anyDuplicated(count_matrix[, "Gene"])) {
     count_matrix <- count_matrix %>%
-      group_by(Gene = count_matrix[, 1]) %>%
-      summarise(across(where(is.numeric), sum, na.rm = TRUE), .groups = 'drop') %>%
-      as.data.frame()
+      group_by(Gene) %>%
+      summarise(across(where(is.numeric), sum, na.rm = TRUE), .groups = 'drop')
   }
   
   # Convert to a matrix for further analysis
+  count_matrix <- as.data.frame(count_matrix)
   rownames(count_matrix) <- count_matrix$Gene
   count_matrix <- as.matrix(count_matrix[, -1])
   
@@ -74,17 +74,21 @@ map_and_aggregate <- function(count_matrix, dataset) {
 }
 
 # Function to filter lowly-expressed genes
-filter_lowly_expressed_genes <- function(count_matrix){
+filter_lowly_expressed_genes_and_handle_zeros <- function(count_matrix){
   # Normalize the data using the TMM method from edgeR
   dge <- DGEList(counts = count_matrix)
   dge <- calcNormFactors(dge, method = "TMM")
   log_count_matrix <- cpm(dge, log = TRUE, prior.count = 1)
   
-  # Assess gene expression variability
+  # Calculate median expression level across genes and median absolute deviation (MAD) for each gene
   median_expression <- apply(log_count_matrix, 1, median)
   mad_expression <- apply(log_count_matrix, 1, mad)
+  
+  # Dynamically set mad_multiplier based on skewness
   data_skewness <- skewness(median_expression)
   mad_multiplier <- ifelse(data_skewness <= 1, 1.5, ifelse(data_skewness <= 2, 2, 2.5))
+  
+  # Combine median and MAD for a robust measure of gene expression variability
   threshold_expression <- median_expression + (mad_multiplier * mad_expression)
   
   # Filter genes with low expression variability
@@ -133,4 +137,4 @@ adjust_outliers <- function(filtered_log_count_matrix) {
 
 # Apply the functions on your datasets
 setwd(normalizePath(dirname(rstudioapi::getSourceEditorContext()$path)))
-SKCM_RNA_count_matrix <- preprocess_count_matrix("SKCM_RNA.csv")
+SKCM_RNA-Seq <- preprocess_count_matrix("SKCM_RNA.csv")

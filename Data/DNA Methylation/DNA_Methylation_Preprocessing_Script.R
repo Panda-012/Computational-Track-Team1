@@ -1,17 +1,11 @@
 # Load necessary libraries
-library(readr)
 library(limma)
 library(Rtsne)
 library(edgeR)
-library(glmmTMB)
 library(e1071)
-library(data.table)
 library(impute)
-library(ggplot2)
 library(minfi) # For DNA methylation data handling
-library(reshape2) # For melt function
 library(dplyr) # For data manipulation
-library(jsonlite)  # For loading metadata and clinical data
 
 # Set working directory and load the data
 setwd(normalizePath(dirname(rstudioapi::getSourceEditorContext()$path)))
