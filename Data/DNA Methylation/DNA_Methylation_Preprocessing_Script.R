@@ -4,6 +4,7 @@ library(Rtsne)
 library(edgeR)
 library(e1071)
 library(impute)
+library(preprocessCore)
 library(minfi) # For DNA methylation data handling
 library(dplyr) # For data manipulation
 
@@ -23,8 +24,13 @@ Environment_Data <- ls()
 sum(duplicated(rownames(count_matrix)))
 
 # Identify missing values
-sum(is.na(count_matrix))
 sum(count_matrix == 0, na.rm = TRUE)
+sum(is.na(count_matrix))
+
+# Assess quality before processing
+affy::plotDensity(count_matrix)
+plot(density(apply(count_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
+plotMDS(count_matrix)
 
 # Assess the missing data
 missing_per_site <- colSums(is.na(count_matrix)) / nrow(count_matrix)
@@ -37,6 +43,11 @@ sample_missing_threshold <- mean(missing_per_sample) + sd(missing_per_sample)
 # Filter sites and samples based on the calculated thresholds
 filtered_matrix <- count_matrix[rowSums(is.na(count_matrix)) / ncol(count_matrix) < sample_missing_threshold, ]
 filtered_matrix <- filtered_matrix[, colSums(is.na(filtered_matrix)) / nrow(filtered_matrix) < site_missing_threshold]
+
+# Assess quality after initial filtration
+affy::plotDensity(filtered_matrix)
+plot(density(apply(filtered_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
+plotMDS(filtered_matrix)
 
 # Calculate median methylation and MAD before imputation, for filtering CpG Sites
 median_methylation <- apply(filtered_matrix, 1, median, na.rm = TRUE)
@@ -57,66 +68,79 @@ samples_threshold <- 0.05 + (0.15 * (1 - overall_non_zero_proportion))
 keep_sites <- rowSums(filtered_matrix >= threshold_methylation, na.rm = TRUE) >= (samples_threshold * ncol(filtered_matrix))
 filtered_data_matrix <- filtered_matrix[keep_sites, ]
 
+# Assess quality after filtration
+affy::plotDensity(filtered_data_matrix)
+plot(density(apply(filtered_data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
+plotMDS(filtered_data_matrix)
+
 # Now, impute missing values in the filtered matrix
 k <- min(10, ncol(filtered_data_matrix) - 1) # Set neighbors for KNN imputation
 imputed_matrix <- impute.knn(as.matrix(filtered_data_matrix), k = k)$data
 
-# Assess quality before processing
+# Assess quality after imputation
 affy::plotDensity(imputed_matrix)
 plot(density(apply(imputed_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
 plotMDS(imputed_matrix)
 
 # After filtering, clean up the environment from temporary variables
-rm(list=setdiff(ls(), c(Environment_Data, "imputed_matrix")))
+rm(list=setdiff(ls(), c(Environment_Data, "imputed_matrix", "filtered_matrix","filtered_data_matrix")))
 
-# Identify outliers (visually and statistically)
-boxplot(imputed_matrix)
-length(boxplot.stats(imputed_matrix)$out)
+# Apply Quantile Normalization
+normalized_data_matrix <- as.data.frame(normalize.quantiles(as.matrix(imputed_matrix)))
 
-# Create dge and normalize the data using TMM
-dge <- DGEList(counts = imputed_matrix)
-dge <- calcNormFactors(dge, method = "TMM")  # Perform TMM normalization within DGEList
+# Restore rownames and colnames
+rownames(normalized_data_matrix) <- rownames(imputed_matrix)
+colnames(normalized_data_matrix) <- colnames(imputed_matrix)
 
-# Apply log2 transformation to stabilize variance
-log_data_matrix <- cpm(dge, log = TRUE, prior.count = 1)
-length(boxplot.stats(log_data_matrix)$out)
+# Convert back to matrix
+normalized_data_matrix <- as.matrix(normalized_data_matrix)
 
-# Reassess quality after log transformation
-affy::plotDensity(log_data_matrix)
-plot(density(apply(log_data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
-plotMDS(log_data_matrix)
+# Reassess quality after Quantile Normalization
+affy::plotDensity(normalized_data_matrix)
+plot(density(apply(normalized_data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
+plotMDS(normalized_data_matrix)
 
 # Function to adjust outliers directly within a single vector of CpG Methylation values
 Environment_Data <- ls()
-adjust_outliers_directly <- function(CpG_Methylation) {
-  # Constants for outlier detection
-  k <- 3 # Adjust k as needed for stricter or looser criteria
+adjust_outliers_dynamically <- function(data) {
+  calculate_outlier_bounds <- function(data, k) {
+    Q1 <- quantile(data, 0.25, na.rm = TRUE)
+    Q3 <- quantile(data, 0.75, na.rm = TRUE)
+    IQR <- Q3 - Q1
+    lower_bound <- Q1 - k * IQR
+    upper_bound <- Q3 + k * IQR
+    return(c(lower_bound, upper_bound))
+  }
   
-  # Compute lower and upper bounds for this CpG site
-  CpG_mad <- mad(CpG_Methylation, constant = 1)
-  CpG_median <- median(CpG_Methylation)
-  lb <- CpG_median - k * CpG_mad
-  ub <- CpG_median + k * CpG_mad
+  # Initial outlier detection with standard k=1.5
+  k <- 1.5
+  bounds <- calculate_outlier_bounds(data, k)
+  outlier_proportion <- mean(data < bounds[1] | data > bounds[2], na.rm = TRUE)
   
-  # Adjust outliers to the nearest value within the non-outlier range
-  CpG_Methylation[CpG_Methylation < lb] <- lb
-  CpG_Methylation[CpG_Methylation > ub] <- ub
+  # Adjust k based on the outlier proportion
+  target_proportion <- 0.05 # Targeting 5% outliers
+  while (outlier_proportion > target_proportion && k < 10) {
+    k <- k + 0.5
+    bounds <- calculate_outlier_bounds(data, k)
+    outlier_proportion <- mean(data < bounds[1] | data > bounds[2], na.rm = TRUE)
+  }
   
-  return(CpG_Methylation)
+  # Adjust the data points considered as outliers
+  adjusted_data <- ifelse(data < bounds[1], bounds[1], ifelse(data > bounds[2], bounds[2], data))
+  return(adjusted_data)
 }
 
-# Apply the direct adjustment of outliers across all CpG sites
-adjusted_log_data_matrix <- t(apply(log_data_matrix, 1, adjust_outliers_directly))
-length(boxplot.stats(adjusted_log_data_matrix)$out)
-rm(list=setdiff(ls(), c(Environment_Data, "adjust_outliers_directly", "adjusted_log_data_matrix")))
+# Apply the dynamic adjustment of outliers across all CpG sites
+adjusted_data_matrix <- t(apply(normalized_data_matrix, 1, adjust_outliers_dynamically))
+rm(list=setdiff(ls(), c(Environment_Data, "adjust_outliers_dynamically", "adjusted_data_matrix")))
 
 # Reassess quality after handling outliers
-affy::plotDensity(adjusted_log_data_matrix)
-plot(density(apply(adjusted_log_data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
-plotMDS(adjusted_log_data_matrix)
+affy::plotDensity(adjusted_data_matrix)
+plot(density(apply(adjusted_data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
+plotMDS(adjusted_data_matrix)
 
 # Perform PCA
-pca_results <- prcomp(t(adjusted_log_data_matrix), center = TRUE, scale. = TRUE)
+pca_results <- prcomp(t(adjusted_data_matrix), center = TRUE, scale. = TRUE)
 
 # Visualize PCA results
 plot(pca_results$x, col = sample_colors)
@@ -125,11 +149,11 @@ legend("topright", legend = c("Luminal_A", "Luminal_B"), col = unique(sample_col
 # Create Elbow Graph
 variance_explained <- pca_results$sdev^2 / sum(pca_results$sdev^2) * 100
 plot(1:length(variance_explained), variance_explained, type = "b", pch = 19)
-abline(h = 2.5, col = "red", lty = 2)  # Optional threshold for selecting PCs
+abline(h = 2.3, col = "red", lty = 2)  # Optional threshold for selecting PCs
 
 # Perform t-SNE
 set.seed(123)  # Set seed for reproducibility
-tsne_results <- Rtsne(pca_results$x[, 1:10], perplexity = 10)  # Adjust perplexity if needed
+tsne_results <- Rtsne(pca_results$x[, 1:15], perplexity = 10)  # Adjust perplexity if needed
 
 # Visualize t-SNE results
 plot(tsne_results$Y, col = sample_colors)

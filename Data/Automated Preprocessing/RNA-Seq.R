@@ -22,7 +22,7 @@ preprocess_count_matrix <- function(file_path, dataset = "hsapiens_gene_ensembl"
   }
   
   # Adjust for outliers
-  final_count_matrix <- adjust_outliers(filtered_log_count_matrix)
+  final_count_matrix <- t(apply(filtered_log_count_matrix, 1, adjust_outliers))
   
   return(final_count_matrix)
 }
@@ -114,25 +114,32 @@ filter_lowly_expressed_genes_and_handle_zeros <- function(count_matrix){
 
 # Function to adjust for outliers
 adjust_outliers <- function(filtered_log_count_matrix) {
-  # Function to adjust outliers within a single vector of gene expression values
-  adjust_outliers_directly <- function(gene_expression) {
-    # Constants for outlier detection
-    k <- 3
-    gene_mad <- mad(gene_expression, constant = 1)
-    gene_median <- median(gene_expression)
-    lb <- gene_median - k * gene_mad
-    ub <- gene_median + k * gene_mad
-    
-    # Adjust outliers to the nearest value within the non-outlier range
-    gene_expression[gene_expression < lb] <- lb
-    gene_expression[gene_expression > ub] <- ub
-    return(gene_expression)
+  calculate_outlier_bounds <- function(filtered_log_count_matrix, k) {
+    Q1 <- quantile(filtered_log_count_matrix, 0.25, na.rm = TRUE)
+    Q3 <- quantile(filtered_log_count_matrix, 0.75, na.rm = TRUE)
+    IQR <- Q3 - Q1
+    lower_bound <- Q1 - k * IQR
+    upper_bound <- Q3 + k * IQR
+    return(c(lower_bound, upper_bound))
   }
   
-  # Apply the outlier adjustment across all genes
-  adjusted_log_count_matrix <- t(apply(filtered_log_count_matrix, 1, adjust_outliers_directly))
+  # Initial outlier detection with standard k=1.5
+  k <- 1.5
+  bounds <- calculate_outlier_bounds(filtered_log_count_matrix, k)
+  outlier_proportion <- mean(filtered_log_count_matrix < bounds[1] | filtered_log_count_matrix > bounds[2], na.rm = TRUE)
   
-  return(adjusted_log_count_matrix)
+  # Adjust k based on the outlier proportion
+  target_proportion <- 0.05 # Targeting 5% outliers
+  while (outlier_proportion > target_proportion && k < 10) {
+    k <- k + 0.5
+    bounds <- calculate_outlier_bounds(filtered_log_count_matrix, k)
+    outlier_proportion <- mean(filtered_log_count_matrix < bounds[1] | filtered_log_count_matrix > bounds[2], na.rm = TRUE)
+  }
+  
+  # Adjust the data points considered as outliers
+  adjusted_matrix <- ifelse(filtered_log_count_matrix < bounds[1], bounds[1], ifelse(filtered_log_count_matrix > bounds[2], bounds[2], filtered_log_count_matrix))
+  
+  return(adjusted_matrix)
 }
 
 # Apply the functions on your datasets

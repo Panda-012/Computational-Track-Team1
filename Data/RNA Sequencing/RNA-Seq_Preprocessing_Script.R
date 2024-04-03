@@ -94,38 +94,45 @@ filtered_data_matrix <- log_data_matrix[keep_genes, ]
 
 # After filtering, clean up the environment from temporary variables
 rm(list=setdiff(ls(), c("LumA", "LumB", "Basal", "Her2", "Normal", Environment_Data, "data_matrix", "filtered_data_matrix", "sample_colors")))
+Environment_Data <- ls()
 
 # Reassess quality after filtration
 affy::plotDensity(filtered_data_matrix)
 plot(density(apply(filtered_data_matrix, 2, mean, na.rm = TRUE)),main="omics",cex.axis=0.5) #1 rows, 2 columns
 plotMDS(filtered_data_matrix)
 
-# Identify outliers (visually and statistically)
-# boxplot(filtered_data_matrix)
-length(boxplot.stats(filtered_data_matrix)$out)
-
 # Function to adjust outliers directly within a single vector of gene expression values
-Environment_Data <- ls()
-adjust_outliers_directly <- function(gene_expression) {
-  # Constants for outlier detection
-  k <- 3 # Adjust k as needed for stricter or looser criteria
+adjust_outliers <- function(filtered_data_matrix) {
+  calculate_outlier_bounds <- function(filtered_data_matrix, k) {
+    Q1 <- quantile(filtered_data_matrix, 0.25, na.rm = TRUE)
+    Q3 <- quantile(filtered_data_matrix, 0.75, na.rm = TRUE)
+    IQR <- Q3 - Q1
+    lower_bound <- Q1 - k * IQR
+    upper_bound <- Q3 + k * IQR
+    return(c(lower_bound, upper_bound))
+  }
   
-  # Compute lower and upper bounds for this gene
-  gene_mad <- mad(gene_expression, constant = 1)
-  gene_median <- median(gene_expression)
-  lb <- gene_median - k * gene_mad
-  ub <- gene_median + k * gene_mad
+  # Initial outlier detection with standard k=1.5
+  k <- 1.5
+  bounds <- calculate_outlier_bounds(filtered_data_matrix, k)
+  outlier_proportion <- mean(filtered_data_matrix < bounds[1] | filtered_data_matrix > bounds[2], na.rm = TRUE)
   
-  # Adjust outliers to the nearest value within the non-outlier range
-  gene_expression[gene_expression < lb] <- lb
-  gene_expression[gene_expression > ub] <- ub
+  # Adjust k based on the outlier proportion
+  target_proportion <- 0.05 # Targeting 5% outliers
+  while (outlier_proportion > target_proportion && k < 10) {
+    k <- k + 0.5
+    bounds <- calculate_outlier_bounds(filtered_data_matrix, k)
+    outlier_proportion <- mean(filtered_data_matrix < bounds[1] | filtered_data_matrix > bounds[2], na.rm = TRUE)
+  }
   
-  return(gene_expression)
+  # Adjust the data points considered as outliers
+  adjusted_matrix <- ifelse(filtered_data_matrix < bounds[1], bounds[1], ifelse(filtered_data_matrix > bounds[2], bounds[2], filtered_data_matrix))
+  
+  return(adjusted_matrix)
 }
 
 # Apply the direct adjustment of outliers across all genes
-adjusted_data_matrix <- t(apply(filtered_data_matrix, 1, adjust_outliers_directly))
-length(boxplot.stats(adjusted_data_matrix)$out)
+adjusted_data_matrix <- t(apply(filtered_data_matrix, 1, adjust_outliers))
 rm(list=setdiff(ls(), c(Environment_Data, "adjust_outliers_directly", "adjusted_data_matrix")))
 
 # Reassess quality after handling outliers
