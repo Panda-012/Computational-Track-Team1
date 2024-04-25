@@ -13,7 +13,7 @@ setwd(normalizePath(dirname(rstudioapi::getSourceEditorContext()$path)))
 getwd()
 
 # Load DNA methylation count matrix
-count_matrix <- readRDS("DNA_Methylation_Data.rds")
+load("DNA_Methylation_Data.RData")
 rownames(count_matrix) <- as.character(count_matrix[,1])
 count_matrix <- count_matrix[,-1]
 count_matrix <- as.matrix(count_matrix)  # Convert to numeric matrix
